@@ -23,7 +23,9 @@ That is far too heavy for the ESP32, so a small Python server does it and hands 
 | Middle                    | Pause / resume auto-advance            |
 
 Stories auto-advance every 12 s (blue bar under the photo is the timer). The headline list refreshes every 10 min.
-Stories whose photo can't be fetched show a coloured placeholder with the publisher's initial.
+The bridge only passes on stories whose photo it could load: stories it can't get a picture for are skipped and
+replaced by the next ones down Google's list. (If no pictures can be loaded at all, e.g. no internet, it falls back
+to headlines with a coloured placeholder.)
 
 ## Setup
 
@@ -36,7 +38,8 @@ python server.py            # or just double-click run-bridge.bat
 ```
 
 Open <http://localhost:8080> to preview exactly what the CYD will show. Options: `--port`, `--count`
-(headlines per feed), `--lang en-US`, `--country US`, `--refresh` (seconds), `--quality`.
+(stories per feed), `--feed-wait` (max seconds to wait for images, default 15), `--lang en-US`, `--country US`,
+`--refresh` (seconds), `--quality`. The first feed request after starting takes a few seconds while images load.
 
 Windows will ask to let Python through the firewall the first time — allow it on **Private** networks, otherwise the
 CYD can't connect. Find the PC's LAN address with `ipconfig` (the "IPv4 Address").
@@ -75,7 +78,8 @@ For other regions, start the bridge with e.g. `python server.py --country GB --l
 | "Can't reach the bridge"             | Check `BRIDGE_URL` IP, that the bridge is running, and the Windows firewall prompt. Test `http://<ip>:8080/feed.json` from another device. |
 | Taps land in the wrong place         | Tweak `TOUCH_X_MIN/MAX`, `TOUCH_Y_MIN/MAX` at the top of `src/main.cpp`; the serial monitor prints raw and mapped coordinates for every tap. |
 | Screen upside-down                   | Set `SCREEN_ROTATION` to `3` in `config.h`. |
-| Many stories show the coloured placeholder | Some publishers (NYT, Reuters, AP, …) refuse automated requests, so no picture is available for them. The bridge deliberately doesn't work around that. Feeds like Technology or Science tend to have more images. |
+| Stories from NYT, Reuters, AP… never appear | Those publishers refuse automated requests, so no picture is available and the bridge skips them (it deliberately doesn't work around the block). |
+| A feed has fewer than 12 stories     | Google's list ran out of stories with loadable images, or `--feed-wait` expired. Raise `--feed-wait` or lower `--count`. |
 | Non-English characters missing       | The display font is ASCII-only; the bridge folds accents to plain letters and drops anything else. |
 
 ## Layout

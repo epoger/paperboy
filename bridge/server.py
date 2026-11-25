@@ -182,7 +182,7 @@ slides = {}                      # item_id -> Future[bytes|None]
 slides_lock = threading.Lock()
 feeds = {}                       # feed key -> dict(time, data)
 feeds_lock = threading.Lock()
-MAX_SLIDES = 400
+MAX_SLIDES = 700
 
 
 def get_slide(item_id: str, gn_link: str):
@@ -211,19 +211,53 @@ def build_feed(key: str):
     r.raise_for_status()
     channel = ET.fromstring(r.content).find("channel")
     label = ascii_clean(channel.findtext("title", "")).replace(" - Google News", "")
-    out = []
-    for it in channel.findall("item")[: cfg.count]:
+    # Candidate stories, in Google's order. We only keep the ones whose picture we can
+    # actually load, and reach further down the list to replace the ones we can't.
+    cands = []
+    for it in channel.findall("item")[: min(40, max(cfg.count * 3, cfg.count))]:
         src = ascii_clean(it.findtext("source", ""))
         title = ascii_clean(it.findtext("title", ""))
         if src and title.endswith(" - " + src):
             title = title[: -(len(src) + 3)]
         link = it.findtext("link", "")
         item_id = hashlib.sha1(it.findtext("guid", link).encode()).hexdigest()[:12]
-        get_slide(item_id, link)                              # start fetching now
-        out.append({"id": item_id, "t": title, "s": src,
-                    "a": age_str(it.findtext("pubDate", "")),
-                    "img": f"/img/{item_id}.jpg", "_link": link})
-    return {"label": label or key, "updated": int(time.time()), "items": out}
+        cands.append({"id": item_id, "t": title, "s": src,
+                      "a": age_str(it.findtext("pubDate", "")),
+                      "img": f"/img/{item_id}.jpg", "_link": link})
+
+    submitted = 0
+
+    def submit_next():
+        nonlocal submitted
+        if submitted < len(cands):
+            c = cands[submitted]
+            c["_fut"] = get_slide(c["id"], c["_link"])
+            submitted += 1
+
+    for _ in range(cfg.count + 3):                            # start a few extra in parallel
+        submit_next()
+
+    chosen = []
+    deadline = time.time() + cfg.feed_wait
+    for c in cands:
+        if len(chosen) >= cfg.count:
+            break
+        if "_fut" not in c:
+            submit_next()                                      # reached on demand after failures
+        try:
+            ok = bool(c["_fut"].result(timeout=max(0.1, deadline - time.time())))
+        except Exception:                                      # timed out
+            ok = False
+        if ok:
+            chosen.append(c)
+        else:
+            submit_next()                                      # replace it with a fresh candidate
+    log(f"feed {key}: {len(chosen)} stories with images from {submitted} tried")
+
+    if not chosen:                                             # e.g. no internet / decoder missing
+        log("WARNING: no images available at all - serving headlines only")
+        chosen = cands[: cfg.count]
+    return {"label": label or key, "updated": int(time.time()), "items": chosen}
 
 
 def get_feed(key: str):
@@ -286,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/feed.json":
                 data = get_feed(feed_key_from_query(qs))
                 public = {**data, "items": [{k: v for k, v in i.items() if k[0] != "_"}
-                                            for i in data["items"]]}
+                                            for i in data["items"]]}                # hide _link/_fut
                 self.send_body(200, "application/json", json.dumps(public).encode())
             elif u.path.startswith("/img/") and u.path.endswith(".jpg"):
                 self.serve_image(u.path[5:-4])
@@ -334,7 +368,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--count", type=int, default=12, help="headlines per feed (default 12)")
+    ap.add_argument("--count", type=int, default=12, help="stories per feed (default 12); only stories with a loadable image are kept")
+    ap.add_argument("--feed-wait", type=float, default=15, help="max seconds to wait for images when building a feed (default 15)")
     ap.add_argument("--lang", default="en-US", help="Google News language, e.g. en-US, fr, de")
     ap.add_argument("--country", default="US", help="Google News country, e.g. US, GB, CA")
     ap.add_argument("--refresh", type=int, default=600, help="seconds between RSS refreshes")
