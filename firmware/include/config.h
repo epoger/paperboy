@@ -30,4 +30,5 @@ static const char *const FEEDS[] = {
 // ---------------------------------------------------------------------------
 #define SLIDE_SECONDS 12          // auto-advance interval
 #define FEED_REFRESH_MINUTES 10   // how often to re-download the headline list
-#define SCREEN_ROTATION 0         // portrait: 0, or 2 to flip it upside-down
+#define SCREEN_ROTATION 0         // CYD only. Portrait: 0, or 2 to flip it upside-down
+#define AMOLED_BRIGHTNESS 200     // Waveshare watch only. 0-255 (lower = longer battery life)

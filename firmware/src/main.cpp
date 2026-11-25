@@ -1,13 +1,16 @@
-// CYD News - Google News headlines + pictures on the ESP32-2432S028R.
+// CYD News - Google News headlines + pictures on small ESP32 touch displays.
+//   * "Cheap Yellow Display" ESP32-2432S028R  (240x320)
+//   * Waveshare ESP32-S3-Touch-AMOLED-2.06    (410x502)
+// Board specifics live in hal_cyd.cpp / hal_amoled206.cpp; layout sizes in hal.h.
 //
-// The CYD talks to bridge/server.py (running on a PC / Raspberry Pi on your LAN),
+// The device talks to bridge/server.py (running on a PC / Raspberry Pi on your LAN),
 // which turns Google News into a small JSON feed and ESP32-friendly JPEGs.
 //
-// Screen (240x320, portrait):
+// Screen (portrait):
 //   +------------------------+
-//   | [Top stories >]        |  <- tap the label: next feed
+//   | [Top stories >]        |  <- tap the top strip: next feed
 //   |                        |
-//   |     240x176 photo      |
+//   |  photo (W x IMG_H)     |
 //   |                        |
 //   |======= progress =======|
 //   | Headline text,         |
@@ -20,42 +23,20 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <SPI.h>
-#include <TFT_eSPI.h>
-#include <TJpg_Decoder.h>
 #include <WiFi.h>
-#include <XPT2046_Touchscreen.h>
 #include <vector>
 
 #include "config.h"
+#include "hal.h"
 
-static_assert(SCREEN_ROTATION == 0 || SCREEN_ROTATION == 2, "SCREEN_ROTATION must be 0 or 2 (portrait)");
+using board::H;
+using board::W;
 
-// ---- hardware ------------------------------------------------------------
-#define TOUCH_CS 33
-#define TOUCH_IRQ 36
-#define TOUCH_SCLK 25
-#define TOUCH_MISO 39
-#define TOUCH_MOSI 32
-// Raw ADC range of the XPT2046 on a typical CYD. Adjust if taps land off-target.
-#define TOUCH_X_MIN 200
-#define TOUCH_X_MAX 3700
-#define TOUCH_Y_MIN 240
-#define TOUCH_Y_MAX 3800
+static const int BAR_Y = board::IMG_H;
+static const int TEXT_X = board::PAD, TEXT_Y = board::IMG_H + board::TEXT_GAP, TEXT_W = W - 2 * board::PAD;
+static const int FOOT_Y = H - board::FOOT_H;
 
-// ---- layout --------------------------------------------------------------
-// Portrait only (SCREEN_ROTATION 0 or 2 in config.h).
-static const int SCR_W = 240, SCR_H = 320;
-static const int IMG_H = 176;                 // photo is 240x176: must match IMG_W/IMG_H in bridge/server.py
-static const int BAR_Y = IMG_H, BAR_H = 3;    // progress bar sits under the photo
-static const int TEXT_X = 8, TEXT_Y = IMG_H + 10, TEXT_W = SCR_W - 16, TEXT_LINES = 6;
-static const int FOOT_Y = SCR_H - 18;
-static const size_t JPG_MAX = 56 * 1024;
-
-TFT_eSPI tft;
-XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
-
-uint16_t C_BG, C_TEXT, C_DIM, C_ACCENT;
+uint16_t C_BG, C_TEXT, C_DIM, C_ACCENT, C_BADGE;
 
 struct Item {
   String id, title, source, age, img;
@@ -67,38 +48,9 @@ int cur = 0;           // current slide
 bool paused = false;
 uint32_t slideShownAt = 0, lastFeedAt = 0, lastBar = 0;
 int barPx = 0;
-static uint8_t jpgBuf[JPG_MAX];
+uint8_t *jpgBuf = nullptr;
 
 // ---- helpers ---------------------------------------------------------------
-bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bmp) {
-  if (y >= tft.height()) return false;
-  tft.pushImage(x, y, w, h, bmp);
-  return true;
-}
-
-std::vector<String> wrap(const String &text, int maxW, int maxLines);
-
-// Full-screen message, centred; both lines word-wrap to fit the narrow portrait screen.
-void status(const String &line1, const String &line2 = "", uint16_t col = TFT_WHITE) {
-  tft.fillScreen(C_BG);
-  tft.setTextDatum(TC_DATUM);
-  tft.setFreeFont(&FreeSansBold12pt7b);
-  auto l1 = wrap(line1, SCR_W - 20, 3);
-  int h1 = tft.fontHeight();
-  tft.setTextFont(2);
-  auto l2 = wrap(line2, SCR_W - 20, 4);
-  int h2 = tft.fontHeight();
-  int y = (SCR_H - ((int)l1.size() * h1 + 10 + (int)l2.size() * h2)) / 2;
-  tft.setFreeFont(&FreeSansBold12pt7b);
-  tft.setTextColor(col, C_BG);
-  for (auto &l : l1) { tft.drawString(l, SCR_W / 2, y); y += h1; }
-  y += 10;
-  tft.setTextFont(2);
-  tft.setTextColor(C_DIM, C_BG);
-  for (auto &l : l2) { tft.drawString(l, SCR_W / 2, y); y += h2; }
-  Serial.printf("[status] %s %s\n", line1.c_str(), line2.c_str());
-}
-
 // Greedy word-wrap using the currently selected font.
 std::vector<String> wrap(const String &text, int maxW, int maxLines) {
   std::vector<String> lines;
@@ -111,22 +63,46 @@ std::vector<String> wrap(const String &text, int maxW, int maxLines) {
     i = j + 1;
     if (!word.length()) continue;
     String trial = line.length() ? line + " " + word : word;
-    if (tft.textWidth(trial) <= maxW) {
+    if (hal::textWidth(trial) <= maxW) {
       line = trial;
     } else {
       if (line.length()) lines.push_back(line);
       line = word;
-      while (line.length() > 1 && tft.textWidth(line) > maxW) line.remove(line.length() - 1);
+      while (line.length() > 1 && hal::textWidth(line) > maxW) line.remove(line.length() - 1);
     }
   }
   if (line.length()) lines.push_back(line);
   if ((int)lines.size() > maxLines) {
     lines.resize(maxLines);
     String &last = lines.back();
-    while (last.length() > 1 && tft.textWidth(last + "...") > maxW) last.remove(last.length() - 1);
+    while (last.length() > 1 && hal::textWidth(last + "...") > maxW) last.remove(last.length() - 1);
     last += "...";
   }
   return lines;
+}
+
+// Full-screen message, centred; both lines word-wrap to fit the narrow portrait screen.
+void status(const String &line1, const String &line2 = "", uint16_t col = hal::WHITE) {
+  hal::fillScreen(C_BG);
+  hal::setFont(hal::FONT_TITLE);
+  auto l1 = wrap(line1, W - 2 * board::PAD, 3);
+  int h1 = hal::lineHeight();
+  hal::setFont(hal::FONT_SMALL);
+  auto l2 = wrap(line2, W - 2 * board::PAD, 4);
+  int h2 = hal::lineHeight();
+  int y = (H - ((int)l1.size() * h1 + 10 + (int)l2.size() * h2)) / 2;
+  hal::setFont(hal::FONT_TITLE);
+  for (auto &l : l1) {
+    hal::drawText(l, W / 2, y, hal::TC, col, C_BG);
+    y += h1;
+  }
+  y += 10;
+  hal::setFont(hal::FONT_SMALL);
+  for (auto &l : l2) {
+    hal::drawText(l, W / 2, y, hal::TC, C_DIM, C_BG);
+    y += h2;
+  }
+  Serial.printf("[status] %s %s\n", line1.c_str(), line2.c_str());
 }
 
 // ---- network ---------------------------------------------------------------
@@ -138,7 +114,7 @@ bool connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) delay(250);
   if (WiFi.status() != WL_CONNECTED) {
-    status("WiFi failed", "Check WIFI_SSID / WIFI_PASS in config.h", TFT_ORANGE);
+    status("WiFi failed", "Check WIFI_SSID / WIFI_PASS in config.h", hal::ORANGE);
     return false;
   }
   Serial.printf("WiFi ok, IP %s\n", WiFi.localIP().toString().c_str());
@@ -147,7 +123,8 @@ bool connectWiFi() {
 
 bool fetchFeed() {
   if (!connectWiFi()) return false;
-  String url = String(BRIDGE_URL) + "/feed.json?" + FEEDS[feedIdx];
+  // w/h tell the bridge what size to make the photos for this screen
+  String url = String(BRIDGE_URL) + "/feed.json?" + FEEDS[feedIdx] + "&w=" + String(W) + "&h=" + String(board::IMG_H);
   HTTPClient http;
   http.setTimeout(20000);  // first request can take a few seconds while the bridge warms up
   http.begin(url);
@@ -193,7 +170,7 @@ size_t fetchImage(const String &path) {
   http.begin(String(BRIDGE_URL) + path);
   int code = http.GET();
   size_t size = (code == 200) ? http.getSize() : 0;
-  if (size == 0 || size > JPG_MAX) {
+  if (size == 0 || size > board::JPG_MAX) {
     if (code != 404) Serial.printf("image %s -> HTTP %d size %u\n", path.c_str(), code, (unsigned)size);
     http.end();
     return 0;
@@ -217,40 +194,34 @@ size_t fetchImage(const String &path) {
 // ---- drawing ---------------------------------------------------------------
 void drawBadge() {
   String label = feedLabel + " >";
-  tft.setTextFont(2);
-  int w = min(tft.textWidth(label) + 14, SCR_W - 12);
-  tft.fillRoundRect(6, 6, w, 22, 5, tft.color565(10, 10, 14));
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString(label, 13, 18);
+  hal::setFont(hal::FONT_SMALL);
+  int w = min(hal::textWidth(label) + 2 * board::BADGE_PAD, W - 2 * board::BADGE_X) & ~1;  // even: the AMOLED needs it
+  hal::fillRoundRect(board::BADGE_X, board::BADGE_Y, w, board::BADGE_H, 5, C_BADGE);
+  hal::drawText(label, board::BADGE_X + board::BADGE_PAD, board::BADGE_Y + board::BADGE_H / 2, hal::ML, hal::WHITE,
+                C_BADGE);
 }
 
 void drawFooter() {
   const Item &it = items[cur];
-  tft.fillRect(0, FOOT_Y - 1, SCR_W, SCR_H - FOOT_Y + 1, C_BG);
-  tft.setTextFont(2);
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(C_ACCENT, C_BG);
+  hal::fillRect(0, FOOT_Y - 2, W, H - FOOT_Y + 2, C_BG);  // even-aligned (the AMOLED needs that)
+  hal::setFont(hal::FONT_SMALL);
   String left = it.source;
   if (it.age.length()) left += "  |  " + it.age;
-  while (left.length() > 1 && tft.textWidth(left) > 140) left.remove(left.length() - 1);
-  tft.drawString(left, TEXT_X, FOOT_Y);
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextColor(C_DIM, C_BG);
-  tft.drawString(String(paused ? "paused  " : "") + String(cur + 1) + "/" + String(items.size()),
-                 SCR_W - TEXT_X, FOOT_Y);
+  while (left.length() > 1 && hal::textWidth(left) > board::FOOT_LEFT_W) left.remove(left.length() - 1);
+  hal::drawText(left, TEXT_X, FOOT_Y, hal::TL, C_ACCENT, C_BG);
+  hal::drawText(String(paused ? "paused  " : "") + String(cur + 1) + "/" + String(items.size()), W - TEXT_X, FOOT_Y,
+                hal::TR, C_DIM, C_BG);
 }
 
 void drawPlaceholder(const Item &it) {
   uint32_t h = 2166136261u;
   for (size_t i = 0; i < it.source.length(); i++) h = (h ^ (uint8_t)it.source[i]) * 16777619u;
-  tft.fillRect(0, 0, SCR_W, IMG_H, tft.color565(25 + (h & 0x3F), 25 + ((h >> 6) & 0x3F), 55 + ((h >> 12) & 0x4F)));
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(TFT_WHITE);
-  tft.setFreeFont(&FreeSansBold24pt7b);
+  uint16_t col = hal::rgb(25 + (h & 0x3F), 25 + ((h >> 6) & 0x3F), 55 + ((h >> 12) & 0x4F));
+  hal::fillRect(0, 0, W, board::IMG_H, col);
+  hal::setFont(hal::FONT_BIG);
   String initial = it.source.length() ? it.source.substring(0, 1) : "N";
   initial.toUpperCase();
-  tft.drawString(initial, SCR_W / 2, IMG_H / 2);
+  hal::drawText(initial, W / 2, board::IMG_H / 2, hal::MC, hal::WHITE, col);
 }
 
 void drawSlide() {
@@ -258,17 +229,15 @@ void drawSlide() {
   const Item &it = items[cur];
 
   // text first (instant), so the screen responds before the picture arrives
-  tft.fillRect(0, BAR_Y, SCR_W, SCR_H - BAR_Y, C_BG);
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(C_TEXT, C_BG);
-  auto lines = wrap(it.title, TEXT_W, TEXT_LINES);
-  int lh = tft.fontHeight();
-  for (size_t i = 0; i < lines.size(); i++) tft.drawString(lines[i], TEXT_X, TEXT_Y + i * lh);
+  hal::fillRect(0, BAR_Y, W, H - BAR_Y, C_BG);
+  hal::setFont(hal::FONT_BODY);
+  auto lines = wrap(it.title, TEXT_W, board::TEXT_LINES);
+  int lh = hal::lineHeight();
+  for (size_t i = 0; i < lines.size(); i++) hal::drawText(lines[i], TEXT_X, TEXT_Y + i * lh, hal::TL, C_TEXT, C_BG);
   drawFooter();
 
   size_t n = fetchImage(it.img);
-  bool ok = n && TJpgDec.drawJpg(0, 0, jpgBuf, n) == 0;
+  bool ok = n && hal::drawJpeg(jpgBuf, n, 0, 0);
   if (!ok) drawPlaceholder(it);
   drawBadge();
 
@@ -279,9 +248,10 @@ void drawSlide() {
 void updateBar() {
   if (millis() - lastBar < 150 || items.empty()) return;
   lastBar = millis();
-  int px = paused ? barPx : min(SCR_W, (int)((millis() - slideShownAt) * SCR_W / (SLIDE_SECONDS * 1000UL)));
+  int px = paused ? barPx : min(W, (int)((millis() - slideShownAt) * W / (SLIDE_SECONDS * 1000UL)));
+  px &= ~1;  // even widths only: the AMOLED can't address odd-sized windows
   if (px > barPx) {
-    tft.fillRect(barPx, BAR_Y, px - barPx, BAR_H, C_ACCENT);
+    hal::fillRect(barPx, BAR_Y, px - barPx, board::BAR_H, C_ACCENT);
     barPx = px;
   }
 }
@@ -298,31 +268,23 @@ void switchFeed() {
   items.clear();
   cur = 0;
   if (fetchFeed()) showSlide(0);
-  else status("Can't reach the bridge", String(BRIDGE_URL), TFT_ORANGE);
+  else status("Can't reach the bridge", String(BRIDGE_URL), hal::ORANGE);
 }
 
 // ---- touch -----------------------------------------------------------------
 void handleTouch() {
   static bool was = false;
   static uint32_t lastTap = 0;
-  bool now = ts.touched();
+  int x = 0, y = 0;
+  bool now = hal::touched(x, y);
   if (now && !was && millis() - lastTap > 250) {
-    TS_Point p = ts.getPoint();
-    // The touch layer is kept in the panel's native landscape orientation (ts.setRotation(1)):
-    // raw x runs along the 320 px side, raw y along the 240 px side. Turn that into portrait
-    // coordinates for the current display rotation.
-    int xl = constrain(map(p.x, TOUCH_X_MIN, TOUCH_X_MAX, 0, 319), 0, 319);
-    int yl = constrain(map(p.y, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, 239), 0, 239);
-    int x = (SCREEN_ROTATION == 0) ? (SCR_W - 1 - yl) : yl;
-    int y = (SCREEN_ROTATION == 0) ? xl : (SCR_H - 1 - xl);
     lastTap = millis();
-    Serial.printf("tap raw(%d,%d) -> (%d,%d)\n", p.x, p.y, x, y);
-    if (y < 34) switchFeed();
-    else if (x < SCR_W / 3) showSlide(cur - 1);
-    else if (x > SCR_W * 2 / 3) showSlide(cur + 1);
+    if (y < board::TOP_ZONE) switchFeed();
+    else if (x < W / 3) showSlide(cur - 1);
+    else if (x > W * 2 / 3) showSlide(cur + 1);
     else {
       paused = !paused;
-      if (!paused) slideShownAt = millis() - (uint32_t)barPx * SLIDE_SECONDS * 1000UL / SCR_W;
+      if (!paused) slideShownAt = millis() - (uint32_t)barPx * SLIDE_SECONDS * 1000UL / W;
       drawFooter();
     }
   }
@@ -332,46 +294,36 @@ void handleTouch() {
 // ---- main ------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  // the CYD's RGB LED is active-low and very bright: switch it off
-  for (int pin : {4, 16, 17}) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
-  }
-
-  tft.init();
-  tft.setRotation(SCREEN_ROTATION);
-  tft.setSwapBytes(true);
+  hal::begin();
 
 #ifdef COLOR_TEST
   // Diagnostic build (pio run -e cyd-colortest): five vertical bars, left to right:
   // RED, GREEN, BLUE, WHITE, BLACK. Compare with what the screen actually shows.
   {
-    const uint16_t bars[5] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE, TFT_BLACK};
-    for (int i = 0; i < 5; i++) tft.fillRect(i * SCR_W / 5, 0, SCR_W / 5, SCR_H, bars[i]);
+    const uint16_t bars[5] = {hal::rgb(255, 0, 0), hal::rgb(0, 255, 0), hal::rgb(0, 0, 255), hal::WHITE, 0};
+    for (int i = 0; i < 5; i++) hal::fillRect(i * W / 5, 0, W / 5, H, bars[i]);
     Serial.println("COLOR TEST: bars should be red, green, blue, white, black");
     while (true) delay(1000);
   }
 #endif
 
-  C_BG = tft.color565(14, 16, 22);
-  C_TEXT = TFT_WHITE;
-  C_DIM = tft.color565(140, 146, 160);
-  C_ACCENT = tft.color565(66, 133, 244);
+  C_BG = hal::rgb(14, 16, 22);
+  C_TEXT = hal::WHITE;
+  C_DIM = hal::rgb(140, 146, 160);
+  C_ACCENT = hal::rgb(66, 133, 244);
+  C_BADGE = hal::rgb(10, 10, 14);
 
-  // The display runs on HSPI (see USE_HSPI_PORT in platformio.ini); touch gets the default VSPI bus.
-  SPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
-  ts.begin();
-  ts.setRotation(1);  // raw, native orientation; portrait mapping is done in handleTouch()
+  jpgBuf = (uint8_t *)(psramFound() ? ps_malloc(board::JPG_MAX) : malloc(board::JPG_MAX));
+  if (!jpgBuf) {
+    status("Out of memory", "Could not allocate the photo buffer", hal::ORANGE);
+    while (true) delay(1000);
+  }
 
-  TJpgDec.setJpgScale(1);
-  // byte swapping is done once, by tft.setSwapBytes(true) above; don't swap again in the decoder
-  TJpgDec.setCallback(tftOutput);
-
-  status("CYD News", "starting...");
+  status(board::NAME, "starting...");
   if (connectWiFi()) {
     status("Loading headlines...", BRIDGE_URL);
     if (fetchFeed()) showSlide(0);
-    else status("Can't reach the bridge", String(BRIDGE_URL), TFT_ORANGE);
+    else status("Can't reach the bridge", String(BRIDGE_URL), hal::ORANGE);
   }
 }
 

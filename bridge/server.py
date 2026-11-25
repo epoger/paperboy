@@ -8,8 +8,8 @@ lifting for the CYD:
 
   1. downloads the Google News RSS feed,
   2. resolves each article's real URL and finds its lead image (og:image),
-  3. crops/shrinks that image to a 240x176 *baseline* JPEG (what the ESP32 can
-     decode), and
+  3. crops/shrinks that image to a *baseline* JPEG of the size the device asks for
+     (default 240x176; the watch asks for its own via ?w=&h=), and
   4. serves a compact JSON feed + the JPEGs over plain HTTP on your LAN.
 
 Endpoints
@@ -42,7 +42,7 @@ try:  # optional but strongly recommended: turns news.google.com links into real
 except ImportError:  # pragma: no cover
     gnewsdecoder = None
 
-IMG_W, IMG_H = 240, 176          # portrait slide; must match SCR_W / IMG_H in firmware/src/main.cpp
+DEFAULT_W, DEFAULT_H = 240, 176  # CYD slide; each device may ask for its own size with ?w=&h=
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 TOPICS = {"TOP", "WORLD", "NATION", "BUSINESS", "TECHNOLOGY",
@@ -132,26 +132,28 @@ def find_image_url(page_url: str):
     return None
 
 
-def make_slide(img_bytes: bytes):
+def make_slide(img_bytes: bytes, w: int, h: int):
     im = Image.open(io.BytesIO(img_bytes))
     im.load()
     if im.width < 160 or im.height < 90:          # logos / tracking pixels
         return None
     im = ImageOps.exif_transpose(im).convert("RGB")
     # centering y=0.3 keeps faces / headlines of tall photos in frame
-    im = ImageOps.fit(im, (IMG_W, IMG_H), Image.LANCZOS, centering=(0.5, 0.3))
+    im = ImageOps.fit(im, (w, h), Image.LANCZOS, centering=(0.5, 0.3))
     # baseline (non-progressive) JPEG: TJpg_Decoder on the ESP32 can't do progressive.
-    # The firmware's download buffer is 56 KB, so step the quality down if needed.
+    # Download buffers: 56 KB on the CYD, 128 KB (PSRAM) on the watch, so step quality down.
+    limit = 48 * 1024 if w * h <= 60000 else 96 * 1024
     for q in (cfg.quality, 70, 60, 50, 40):
         out = io.BytesIO()
         im.save(out, "JPEG", quality=min(q, cfg.quality), progressive=False, optimize=False,
                 subsampling=2)
-        if out.tell() <= 48 * 1024:
+        if out.tell() <= limit:
             break
     return out.getvalue()
 
 
-def build_slide(item_id: str, gn_link: str):
+def fetch_original(item_id: str, gn_link: str):
+    """Find and download the article's lead image (full size). None if unavailable."""
     t0 = time.time()
     page = resolve_url(gn_link)
     if not page:
@@ -167,10 +169,8 @@ def build_slide(item_id: str, gn_link: str):
         r.raise_for_status()
         data = read_limited(r, 8_000_000)
         r.close()
-        jpg = make_slide(data)
-        if jpg:
-            log(f"  [{item_id}] ok {len(jpg)//1024}KB {urlparse(page).netloc} ({time.time()-t0:.1f}s)")
-        return jpg
+        log(f"  [{item_id}] fetched {len(data)//1024}KB {urlparse(page).netloc} ({time.time()-t0:.1f}s)")
+        return data
     except Exception as e:
         log(f"  [{item_id}] image failed: {type(e).__name__} {str(e)[:70]}")
         return None
@@ -178,21 +178,53 @@ def build_slide(item_id: str, gn_link: str):
 
 # --------------------------------------------------------------------------- state
 pool = None                      # ThreadPoolExecutor, created in main()
-slides = {}                      # item_id -> Future[bytes|None]
+slides = {}                      # (item_id, w, h) -> Future[bytes|None]
 slides_lock = threading.Lock()
-feeds = {}                       # feed key -> dict(time, data)
+originals = {}                   # item_id -> bytes|None, shared by every device / size
+orig_locks = {}                  # item_id -> Lock, so one article is only fetched once
+orig_guard = threading.Lock()
+feeds = {}                       # (feed key, w, h) -> dict(time, data)
 feeds_lock = threading.Lock()
-MAX_SLIDES = 700
+MAX_SLIDES = 900
+MAX_ORIGINALS = 80
 
 
-def get_slide(item_id: str, gn_link: str):
+def get_original(item_id: str, gn_link: str):
+    with orig_guard:
+        lock = orig_locks.setdefault(item_id, threading.Lock())
+    with lock:
+        if item_id in originals:
+            return originals[item_id]
+        data = fetch_original(item_id, gn_link)
+        with orig_guard:
+            originals[item_id] = data
+            while len(originals) > MAX_ORIGINALS:             # drop oldest
+                old = next(iter(originals))
+                originals.pop(old, None)
+                orig_locks.pop(old, None)
+        return data
+
+
+def build_slide(item_id: str, gn_link: str, w: int, h: int):
+    data = get_original(item_id, gn_link)
+    if not data:
+        return None
+    try:
+        return make_slide(data, w, h)
+    except Exception as e:
+        log(f"  [{item_id}] resize failed: {type(e).__name__} {str(e)[:70]}")
+        return None
+
+
+def get_slide(item_id: str, gn_link: str, w: int, h: int):
+    k = (item_id, w, h)
     with slides_lock:
-        fut = slides.get(item_id)
+        fut = slides.get(k)
         if fut is None:
             if len(slides) > MAX_SLIDES:                      # drop oldest
-                for k in list(slides)[:50]:
-                    slides.pop(k, None)
-            fut = slides[item_id] = pool.submit(build_slide, item_id, gn_link)
+                for old in list(slides)[:60]:
+                    slides.pop(old, None)
+            fut = slides[k] = pool.submit(build_slide, item_id, gn_link, w, h)
         return fut
 
 
@@ -206,7 +238,7 @@ def rss_url(key: str):
     return f"https://news.google.com/rss/headlines/section/topic/{val}?{tail}"
 
 
-def build_feed(key: str):
+def build_feed(key: str, w: int, h: int):
     r = requests.get(rss_url(key), headers={"User-Agent": UA}, timeout=15)
     r.raise_for_status()
     channel = ET.fromstring(r.content).find("channel")
@@ -223,7 +255,7 @@ def build_feed(key: str):
         item_id = hashlib.sha1(it.findtext("guid", link).encode()).hexdigest()[:12]
         cands.append({"id": item_id, "t": title, "s": src,
                       "a": age_str(it.findtext("pubDate", "")),
-                      "img": f"/img/{item_id}.jpg", "_link": link})
+                      "img": f"/img/{item_id}.jpg?w={w}&h={h}", "_link": link})
 
     submitted = 0
 
@@ -231,7 +263,7 @@ def build_feed(key: str):
         nonlocal submitted
         if submitted < len(cands):
             c = cands[submitted]
-            c["_fut"] = get_slide(c["id"], c["_link"])
+            c["_fut"] = get_slide(c["id"], c["_link"], w, h)
             submitted += 1
 
     for _ in range(cfg.count + 3):                            # start a few extra in parallel
@@ -260,21 +292,22 @@ def build_feed(key: str):
     return {"label": label or key, "updated": int(time.time()), "items": chosen}
 
 
-def get_feed(key: str):
+def get_feed(key: str, w: int = DEFAULT_W, h: int = DEFAULT_H):
+    fk = (key, w, h)
     with feeds_lock:
-        ent = feeds.get(key)
+        ent = feeds.get(fk)
         if ent and time.time() - ent["time"] < cfg.refresh:
             return ent["data"]
     try:
-        log(f"refreshing feed {key}")
-        data = build_feed(key)
+        log(f"refreshing feed {key} ({w}x{h})")
+        data = build_feed(key, w, h)
     except Exception as e:
         log("feed refresh failed:", e)
         if ent:
             return ent["data"]                                 # serve stale
         raise
     with feeds_lock:
-        feeds[key] = {"time": time.time(), "data": data}
+        feeds[fk] = {"time": time.time(), "data": data}
     return data
 
 
@@ -285,13 +318,23 @@ def feed_key_from_query(qs):
     return "t:" + (topic if topic in TOPICS else "TOP")
 
 
+def size_from_query(qs):
+    """Slide size a device wants (?w=410&h=250). Clamped to something sane."""
+    def num(name, default):
+        try:
+            return max(64, min(600, int(qs.get(name, [default])[0])))
+        except ValueError:
+            return default
+    return num("w", DEFAULT_W), num("h", DEFAULT_H)
+
+
 def background_refresher():
     """Keep every feed that a client has asked for fresh, so slides are ready."""
     while True:
         time.sleep(30)
-        for key in list(feeds):
+        for (key, w, h) in list(feeds):
             try:
-                get_feed(key)
+                get_feed(key, w, h)
             except Exception:
                 pass
 
@@ -318,12 +361,12 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(u.query)
         try:
             if u.path == "/feed.json":
-                data = get_feed(feed_key_from_query(qs))
+                data = get_feed(feed_key_from_query(qs), *size_from_query(qs))
                 public = {**data, "items": [{k: v for k, v in i.items() if k[0] != "_"}
                                             for i in data["items"]]}                # hide _link/_fut
                 self.send_body(200, "application/json", json.dumps(public).encode())
             elif u.path.startswith("/img/") and u.path.endswith(".jpg"):
-                self.serve_image(u.path[5:-4])
+                self.serve_image(u.path[5:-4], *size_from_query(qs))
             elif u.path == "/":
                 self.serve_status(qs)
             else:
@@ -332,9 +375,9 @@ class Handler(BaseHTTPRequestHandler):
             log("error:", type(e).__name__, e)
             self.send_body(500, "text/plain", str(e).encode())
 
-    def serve_image(self, item_id):
+    def serve_image(self, item_id, w, h):
         with slides_lock:
-            fut = slides.get(item_id)
+            fut = slides.get((item_id, w, h))
         if fut is None:
             return self.send_body(404, "text/plain", b"unknown id")
         try:
@@ -346,19 +389,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_body(200, "image/jpeg", jpg, {"Cache-Control": "max-age=3600"})
 
     def serve_status(self, qs):
-        data = get_feed(feed_key_from_query(qs))
+        w, h = size_from_query(qs)
+        data = get_feed(feed_key_from_query(qs), w, h)
         rows = "".join(
-            f"<div class=c><img src='{i['img']}' width={IMG_W} height={IMG_H} "
+            f"<div class=c><img src='{i['img']}' width={w} height={h} "
             f"onerror=\"this.style.background='#223';this.removeAttribute('src')\">"
             f"<b>{html.escape(i['t'])}</b><small>{html.escape(i['s'])} &middot; {i['a']}</small></div>"
             for i in data["items"])
-        topics = " ".join(f"<a href='/?topic={t}'>{t}</a>" for t in sorted(TOPICS))
+        topics = " ".join(f"<a href='/?topic={t}&w={w}&h={h}'>{t}</a>" for t in sorted(TOPICS))
         page = (f"<!doctype html><meta charset=utf-8><title>CYD News Bridge</title>"
                 "<style>body{font:14px system-ui;background:#111;color:#eee;margin:20px}"
                 "a{color:#8cf;margin-right:10px}.g{display:flex;flex-wrap:wrap;gap:14px}"
-                ".c{width:240px;background:#1b1b22}.c img{display:block;width:240px;height:176px}"
+                f".c{{width:{w}px;background:#1b1b22}}.c img{{display:block;width:{w}px;height:{h}px}}"
                 ".c b{display:block;padding:6px 8px 2px}.c small{display:block;padding:0 8px 8px;color:#99a}"
-                f"</style><h2>CYD News Bridge &mdash; {html.escape(data['label'])}</h2><p>{topics}</p>"
+                f"</style><h2>CYD News Bridge &mdash; {html.escape(data['label'])} ({w}x{h})</h2><p>{topics}</p>"
                 f"<div class=g>{rows}</div>")
         self.send_body(200, "text/html; charset=utf-8", page.encode())
 
@@ -378,7 +422,7 @@ def main():
     if gnewsdecoder is None:
         log("WARNING: googlenewsdecoder not installed - no images. pip install -r requirements.txt")
     pool = ThreadPoolExecutor(max_workers=6)
-    get_feed("t:TOP")                                           # warm up
+    get_feed("t:TOP", DEFAULT_W, DEFAULT_H)                     # warm up
     threading.Thread(target=background_refresher, daemon=True).start()
     srv = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
     log(f"CYD News Bridge listening on http://{cfg.host}:{cfg.port}  (open it in a browser to preview)")
