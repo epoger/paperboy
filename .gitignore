@@ -1,0 +1,7 @@
+# PlatformIO build output and IDE files
+.pio/
+.vscode/
+# Python
+__pycache__/
+*.pyc
+.venv/
