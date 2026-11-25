@@ -43,7 +43,7 @@ pip install -r requirements.txt
 python server.py            # or just double-click run-bridge.bat
 ```
 
-Open <http://localhost:8080> to preview what a CYD will show (add `?w=410&h=250` to preview the watch's photos).
+Open <http://localhost:9412> to preview what a CYD will show (add `?w=410&h=250` to preview the watch's photos).
 Options: `--port`, `--count` (stories per feed), `--feed-wait` (max seconds to wait for images, default 15),
 `--lang en-US`, `--country US`, `--refresh` (seconds), `--quality`. The first feed request after starting takes a few
 seconds while images load.
@@ -55,7 +55,7 @@ device can't connect. Find the PC's LAN address with `ipconfig` (the "IPv4 Addre
 
 Copy [firmware/include/config_secrets.example.h](firmware/include/config_secrets.example.h) to
 `firmware/include/config_secrets.h` (git-ignored) and fill in your WiFi name/password (2.4 GHz only) and the bridge's
-`BRIDGE_URL` (e.g. `http://192.168.1.50:8080`). The list of feeds and other options are in
+`BRIDGE_URL` (e.g. `http://192.168.1.50:9412`). The list of feeds and other options are in
 [firmware/include/config.h](firmware/include/config.h).
 
 Install [PlatformIO](https://platformio.org/install) (VS Code extension, or `pip install platformio`), plug the board
@@ -104,7 +104,7 @@ For other regions, start the bridge with e.g. `python server.py --country GB --l
 
 | Symptom                              | Fix |
 |--------------------------------------|-----|
-| "Can't reach the bridge"             | Check `BRIDGE_URL` IP, that the bridge is running, and the Windows firewall prompt. Test `http://<ip>:8080/feed.json` from another device. |
+| "Can't reach the bridge"             | Check `BRIDGE_URL` IP, that the bridge is running, and the Windows firewall prompt. Test `http://<ip>:9412/feed.json` from another device. |
 | CYD taps land in the wrong place     | Tweak `TOUCH_X_MIN/MAX`, `TOUCH_Y_MIN/MAX` at the top of `src/hal_cyd.cpp`; the serial monitor prints raw and mapped coordinates for every tap. |
 | CYD screen upside-down               | Set `SCREEN_ROTATION` to `2` in `config.h` (portrait only: `0` or `2`). |
 | Photos look garbled or cut off       | The bridge is an old version. Restart `bridge/server.py` — it must support `?w=&h=` photo sizes. |

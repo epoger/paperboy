@@ -411,7 +411,7 @@ def main():
     global pool
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--port", type=int, default=9412)
     ap.add_argument("--count", type=int, default=12, help="stories per feed (default 12); only stories with a loadable image are kept")
     ap.add_argument("--feed-wait", type=float, default=15, help="max seconds to wait for images when building a feed (default 15)")
     ap.add_argument("--lang", default="en-US", help="Google News language, e.g. en-US, fr, de")
