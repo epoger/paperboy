@@ -5,7 +5,7 @@ Google News headlines **and pictures** on small ESP32 touchscreens, used in port
 | Board                                                                   | Screen      | PlatformIO env     | Status                          |
 |-------------------------------------------------------------------------|-------------|--------------------|---------------------------------|
 | "Cheap Yellow Display" ESP32-2432S028R                                  | 2.8" 240x320 | `cyd` (default)    | tested on hardware              |
-| Waveshare ESP32-S3-Touch-AMOLED-2.06 (watch)                            | 2.06" 410x502 AMOLED | `watch-amoled206` | **builds; not yet run on hardware** |
+| Waveshare ESP32-S3-Touch-AMOLED-2.06 (watch)                            | 2.06" 410x502 AMOLED | `watch-amoled206` | tested on hardware |
 
 ```
 Google News RSS ──► bridge/server.py (PC / Raspberry Pi) ──WiFi/HTTP──► CYD / watch
@@ -77,7 +77,7 @@ red/green/blue), swap `-DTFT_INVERSION_OFF=1` for `-DTFT_INVERSION_ON=1` in the 
 #### Waveshare ESP32-S3-Touch-AMOLED-2.06 notes
 
 Built from Waveshare's published Arduino example (pins, the CO5300 display set-up with a 22-pixel column offset, and the
-FT3168 touch registers), but **not yet run on a real watch** — please report anything that looks off.
+FT3168 touch registers) and tested on a real watch.
 
 - The display is driven by [Arduino_GFX](https://github.com/moononournation/Arduino_GFX) over QSPI; touch is read
   directly from the FT3168 over I2C (`src/hal_amoled206.cpp`). The AXP2101 power chip is not touched: Waveshare's
