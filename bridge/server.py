@@ -8,7 +8,7 @@ lifting for the CYD:
 
   1. downloads the Google News RSS feed,
   2. resolves each article's real URL and finds its lead image (og:image),
-  3. crops/shrinks that image to a 320x144 *baseline* JPEG (what the ESP32 can
+  3. crops/shrinks that image to a 240x176 *baseline* JPEG (what the ESP32 can
      decode), and
   4. serves a compact JSON feed + the JPEGs over plain HTTP on your LAN.
 
@@ -42,7 +42,7 @@ try:  # optional but strongly recommended: turns news.google.com links into real
 except ImportError:  # pragma: no cover
     gnewsdecoder = None
 
-IMG_W, IMG_H = 320, 144          # must match the layout in firmware/src/main.cpp
+IMG_W, IMG_H = 240, 176          # portrait slide; must match SCR_W / IMG_H in firmware/src/main.cpp
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 TOPICS = {"TOP", "WORLD", "NATION", "BUSINESS", "TECHNOLOGY",
@@ -356,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         page = (f"<!doctype html><meta charset=utf-8><title>CYD News Bridge</title>"
                 "<style>body{font:14px system-ui;background:#111;color:#eee;margin:20px}"
                 "a{color:#8cf;margin-right:10px}.g{display:flex;flex-wrap:wrap;gap:14px}"
-                ".c{width:320px;background:#1b1b22}.c img{display:block;width:320px;height:144px}"
+                ".c{width:240px;background:#1b1b22}.c img{display:block;width:240px;height:176px}"
                 ".c b{display:block;padding:6px 8px 2px}.c small{display:block;padding:0 8px 8px;color:#99a}"
                 f"</style><h2>CYD News Bridge &mdash; {html.escape(data['label'])}</h2><p>{topics}</p>"
                 f"<div class=g>{rows}</div>")

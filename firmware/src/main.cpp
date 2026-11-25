@@ -3,16 +3,18 @@
 // The CYD talks to bridge/server.py (running on a PC / Raspberry Pi on your LAN),
 // which turns Google News into a small JSON feed and ESP32-friendly JPEGs.
 //
-// Screen (320x240, landscape):
-//   +--------------------------------+
-//   | [Top stories >]                |  <- tap the label: next feed
-//   |          320x144 photo         |
-//   |                                |
-//   |================ progress =====|
-//   | Headline text, word-wrapped    |
-//   | up to four lines               |
-//   | Source | 2h            3/12    |
-//   +--------------------------------+
+// Screen (240x320, portrait):
+//   +------------------------+
+//   | [Top stories >]        |  <- tap the label: next feed
+//   |                        |
+//   |     240x176 photo      |
+//   |                        |
+//   |======= progress =======|
+//   | Headline text,         |
+//   | word-wrapped over up   |
+//   | to six lines           |
+//   | Source | 2h      3/12  |
+//   +------------------------+
 // Touch: left third = previous, right third = next, middle = pause / resume.
 
 #include <Arduino.h>
@@ -27,6 +29,8 @@
 
 #include "config.h"
 
+static_assert(SCREEN_ROTATION == 0 || SCREEN_ROTATION == 2, "SCREEN_ROTATION must be 0 or 2 (portrait)");
+
 // ---- hardware ------------------------------------------------------------
 #define TOUCH_CS 33
 #define TOUCH_IRQ 36
@@ -40,11 +44,12 @@
 #define TOUCH_Y_MAX 3800
 
 // ---- layout --------------------------------------------------------------
-static const int SCR_W = 320, SCR_H = 240;
-static const int IMG_H = 144;                 // must match IMG_H in bridge/server.py
+// Portrait only (SCREEN_ROTATION 0 or 2 in config.h).
+static const int SCR_W = 240, SCR_H = 320;
+static const int IMG_H = 176;                 // photo is 240x176: must match IMG_W/IMG_H in bridge/server.py
 static const int BAR_Y = IMG_H, BAR_H = 3;    // progress bar sits under the photo
-static const int TEXT_X = 8, TEXT_Y = IMG_H + 8, TEXT_W = SCR_W - 16, TEXT_LINES = 4;
-static const int FOOT_Y = SCR_H - 17;
+static const int TEXT_X = 8, TEXT_Y = IMG_H + 10, TEXT_W = SCR_W - 16, TEXT_LINES = 6;
+static const int FOOT_Y = SCR_H - 18;
 static const size_t JPG_MAX = 56 * 1024;
 
 TFT_eSPI tft;
@@ -71,15 +76,26 @@ bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bmp) {
   return true;
 }
 
+std::vector<String> wrap(const String &text, int maxW, int maxLines);
+
+// Full-screen message, centred; both lines word-wrap to fit the narrow portrait screen.
 void status(const String &line1, const String &line2 = "", uint16_t col = TFT_WHITE) {
   tft.fillScreen(C_BG);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(col, C_BG);
+  tft.setTextDatum(TC_DATUM);
   tft.setFreeFont(&FreeSansBold12pt7b);
-  tft.drawString(line1, SCR_W / 2, SCR_H / 2 - 14);
+  auto l1 = wrap(line1, SCR_W - 20, 3);
+  int h1 = tft.fontHeight();
+  tft.setTextFont(2);
+  auto l2 = wrap(line2, SCR_W - 20, 4);
+  int h2 = tft.fontHeight();
+  int y = (SCR_H - ((int)l1.size() * h1 + 10 + (int)l2.size() * h2)) / 2;
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.setTextColor(col, C_BG);
+  for (auto &l : l1) { tft.drawString(l, SCR_W / 2, y); y += h1; }
+  y += 10;
   tft.setTextFont(2);
   tft.setTextColor(C_DIM, C_BG);
-  tft.drawString(line2, SCR_W / 2, SCR_H / 2 + 16);
+  for (auto &l : l2) { tft.drawString(l, SCR_W / 2, y); y += h2; }
   Serial.printf("[status] %s %s\n", line1.c_str(), line2.c_str());
 }
 
@@ -202,7 +218,7 @@ size_t fetchImage(const String &path) {
 void drawBadge() {
   String label = feedLabel + " >";
   tft.setTextFont(2);
-  int w = min(tft.textWidth(label) + 14, 230);
+  int w = min(tft.textWidth(label) + 14, SCR_W - 12);
   tft.fillRoundRect(6, 6, w, 22, 5, tft.color565(10, 10, 14));
   tft.setTextDatum(ML_DATUM);
   tft.setTextColor(TFT_WHITE);
@@ -217,7 +233,7 @@ void drawFooter() {
   tft.setTextColor(C_ACCENT, C_BG);
   String left = it.source;
   if (it.age.length()) left += "  |  " + it.age;
-  while (left.length() > 1 && tft.textWidth(left) > 215) left.remove(left.length() - 1);
+  while (left.length() > 1 && tft.textWidth(left) > 140) left.remove(left.length() - 1);
   tft.drawString(left, TEXT_X, FOOT_Y);
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(C_DIM, C_BG);
@@ -292,11 +308,16 @@ void handleTouch() {
   bool now = ts.touched();
   if (now && !was && millis() - lastTap > 250) {
     TS_Point p = ts.getPoint();
-    int x = constrain(map(p.x, TOUCH_X_MIN, TOUCH_X_MAX, 0, SCR_W - 1), 0, SCR_W - 1);
-    int y = constrain(map(p.y, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, SCR_H - 1), 0, SCR_H - 1);
+    // The touch layer is kept in the panel's native landscape orientation (ts.setRotation(1)):
+    // raw x runs along the 320 px side, raw y along the 240 px side. Turn that into portrait
+    // coordinates for the current display rotation.
+    int xl = constrain(map(p.x, TOUCH_X_MIN, TOUCH_X_MAX, 0, 319), 0, 319);
+    int yl = constrain(map(p.y, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, 239), 0, 239);
+    int x = (SCREEN_ROTATION == 0) ? (SCR_W - 1 - yl) : yl;
+    int y = (SCREEN_ROTATION == 0) ? xl : (SCR_H - 1 - xl);
     lastTap = millis();
     Serial.printf("tap raw(%d,%d) -> (%d,%d)\n", p.x, p.y, x, y);
-    if (y < 34 && x < 240) switchFeed();
+    if (y < 34) switchFeed();
     else if (x < SCR_W / 3) showSlide(cur - 1);
     else if (x > SCR_W * 2 / 3) showSlide(cur + 1);
     else {
@@ -340,7 +361,7 @@ void setup() {
   // The display runs on HSPI (see USE_HSPI_PORT in platformio.ini); touch gets the default VSPI bus.
   SPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
   ts.begin();
-  ts.setRotation(SCREEN_ROTATION);
+  ts.setRotation(1);  // raw, native orientation; portrait mapping is done in handleTouch()
 
   TJpgDec.setJpgScale(1);
   // byte swapping is done once, by tft.setSwapBytes(true) above; don't swap again in the decoder

@@ -1,11 +1,11 @@
 # CYD News
 
-Google News headlines **and pictures** on the ESP32 "Cheap Yellow Display" (ESP32-2432S028R, 2.8" 320x240 touchscreen).
+Google News headlines **and pictures** on the ESP32 "Cheap Yellow Display" (ESP32-2432S028R, 2.8" 240x320 touchscreen, used in portrait).
 
 ```
 Google News RSS ──► bridge/server.py (PC / Raspberry Pi) ──WiFi/HTTP──► CYD
                     • finds each article's lead image
-                    • shrinks it to 320x144 baseline JPEG
+                    • shrinks it to a 240x176 baseline JPEG
                     • serves compact JSON + images
 ```
 
@@ -77,7 +77,8 @@ For other regions, start the bridge with e.g. `python server.py --country GB --l
 |--------------------------------------|-----|
 | "Can't reach the bridge"             | Check `BRIDGE_URL` IP, that the bridge is running, and the Windows firewall prompt. Test `http://<ip>:8080/feed.json` from another device. |
 | Taps land in the wrong place         | Tweak `TOUCH_X_MIN/MAX`, `TOUCH_Y_MIN/MAX` at the top of `src/main.cpp`; the serial monitor prints raw and mapped coordinates for every tap. |
-| Screen upside-down                   | Set `SCREEN_ROTATION` to `3` in `config.h`. |
+| Screen upside-down                   | Set `SCREEN_ROTATION` to `2` in `config.h` (portrait only: `0` or `2`). |
+| Photos look garbled or cut off after switching to portrait | The bridge is still the old landscape version. Restart `bridge/server.py` — the firmware and bridge must agree on the 240x176 photo size. |
 | Stories from NYT, Reuters, AP… never appear | Those publishers refuse automated requests, so no picture is available and the bridge skips them (it deliberately doesn't work around the block). |
 | A feed has fewer than 12 stories     | Google's list ran out of stories with loadable images, or `--feed-wait` expired. Raise `--feed-wait` or lower `--count`. |
 | Non-English characters missing       | The display font is ASCII-only; the bridge folds accents to plain letters and drops anything else. |

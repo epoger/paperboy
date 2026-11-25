@@ -30,4 +30,4 @@ static const char *const FEEDS[] = {
 // ---------------------------------------------------------------------------
 #define SLIDE_SECONDS 12          // auto-advance interval
 #define FEED_REFRESH_MINUTES 10   // how often to re-download the headline list
-#define SCREEN_ROTATION 1         // 1 = USB port on the right, 3 = USB port on the left
+#define SCREEN_ROTATION 0         // portrait: 0, or 2 to flip it upside-down
