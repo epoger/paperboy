@@ -343,7 +343,7 @@ void setup() {
   ts.setRotation(SCREEN_ROTATION);
 
   TJpgDec.setJpgScale(1);
-  TJpgDec.setSwapBytes(true);
+  // byte swapping is done once, by tft.setSwapBytes(true) above; don't swap again in the decoder
   TJpgDec.setCallback(tftOutput);
 
   status("CYD News", "starting...");
