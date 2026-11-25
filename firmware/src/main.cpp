@@ -320,6 +320,18 @@ void setup() {
   tft.init();
   tft.setRotation(SCREEN_ROTATION);
   tft.setSwapBytes(true);
+
+#ifdef COLOR_TEST
+  // Diagnostic build (pio run -e cyd-colortest): five vertical bars, left to right:
+  // RED, GREEN, BLUE, WHITE, BLACK. Compare with what the screen actually shows.
+  {
+    const uint16_t bars[5] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE, TFT_BLACK};
+    for (int i = 0; i < 5; i++) tft.fillRect(i * SCR_W / 5, 0, SCR_W / 5, SCR_H, bars[i]);
+    Serial.println("COLOR TEST: bars should be red, green, blue, white, black");
+    while (true) delay(1000);
+  }
+#endif
+
   C_BG = tft.color565(14, 16, 22);
   C_TEXT = TFT_WHITE;
   C_DIM = tft.color565(140, 146, 160);

@@ -50,12 +50,14 @@ Install [PlatformIO](https://platformio.org/install) (VS Code extension, or `pip
 
 ```powershell
 cd firmware
-pio run -t upload         # builds the default environment, cyd-st7789
+pio run -t upload         # builds the default environment, cyd (ILI9341, colour inversion on)
 pio device monitor        # optional serial log
 ```
 
-The default environment is `cyd-st7789`, for the **two-USB-port** CYD (ST7789 display). If you have the older
-single-USB-port model, or the screen is blank or the colours are wrong, use `pio run -e cyd -t upload` (ILI9341) instead.
+The default environment `cyd` is tested on a real board. If your screen stays white, your panel may be a different
+controller: try `pio run -e cyd-st7789 -t upload`. If colours look inverted (cyan/magenta/yellow instead of
+red/green/blue), swap `-DTFT_INVERSION_OFF=1` for `-DTFT_INVERSION_ON=1` in the `[env:cyd]` flags. To check colours,
+`pio run -e cyd-colortest -t upload` shows bars that should read red, green, blue, white, black.
 
 ### Feeds
 
