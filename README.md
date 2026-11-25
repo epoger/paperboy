@@ -53,8 +53,10 @@ device can't connect. Find the PC's LAN address with `ipconfig` (the "IPv4 Addre
 
 ### 2. Configure and flash
 
-Edit [firmware/include/config.h](firmware/include/config.h): WiFi name/password (2.4 GHz only), the bridge's
-`BRIDGE_URL` (e.g. `http://192.168.1.50:8080`), and the list of feeds.
+Copy [firmware/include/config_secrets.example.h](firmware/include/config_secrets.example.h) to
+`firmware/include/config_secrets.h` (git-ignored) and fill in your WiFi name/password (2.4 GHz only) and the bridge's
+`BRIDGE_URL` (e.g. `http://192.168.1.50:8080`). The list of feeds and other options are in
+[firmware/include/config.h](firmware/include/config.h).
 
 Install [PlatformIO](https://platformio.org/install) (VS Code extension, or `pip install platformio`), plug the board
 in, then from the `firmware` folder:
@@ -115,7 +117,8 @@ For other regions, start the bridge with e.g. `python server.py --country GB --l
 ```
 bridge/server.py             RSS → JSON + JPEG slides (Python: requests, pillow, googlenewsdecoder)
 firmware/platformio.ini      one environment per board; all pin/driver settings live here
-firmware/include/config.h    WiFi, bridge address, feeds
+firmware/include/config.h    feeds and options
+firmware/include/config_secrets.h   WiFi, bridge address (git-ignored; see config_secrets.example.h)
 firmware/src/main.cpp        the app (same for every board)
 firmware/src/hal.h           what the app needs from a board + per-board layout sizes
 firmware/src/hal_cyd.cpp     CYD:   TFT_eSPI display + XPT2046 touch

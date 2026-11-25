@@ -1,6 +1,8 @@
 # PlatformIO build output and IDE files
 .pio/
 .vscode/
+# WiFi password and bridge address
+firmware/include/config_secrets.h
 # Python
 __pycache__/
 *.pyc

@@ -114,7 +114,7 @@ bool connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) delay(250);
   if (WiFi.status() != WL_CONNECTED) {
-    status("WiFi failed", "Check WIFI_SSID / WIFI_PASS in config.h", hal::ORANGE);
+    status("WiFi failed", "Check WIFI_SSID / WIFI_PASS in config_secrets.h", hal::ORANGE);
     return false;
   }
   Serial.printf("WiFi ok, IP %s\n", WiFi.localIP().toString().c_str());

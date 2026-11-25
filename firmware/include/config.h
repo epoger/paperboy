@@ -1,17 +1,16 @@
 #pragma once
 // ---------------------------------------------------------------------------
-//  CYD News settings - edit these three, then build & upload.
+//  CYD News settings - edit these, then build & upload.
 // ---------------------------------------------------------------------------
 
-// 1. Your 2.4 GHz WiFi network (the ESP32 can't use 5 GHz).
-#define WIFI_SSID "your-wifi-name"
-#define WIFI_PASS "your-wifi-password"
+// 1. WIFI_SSID, WIFI_PASS and BRIDGE_URL live in config_secrets.h (git-ignored).
+#if __has_include("config_secrets.h")
+#include "config_secrets.h"
+#else
+#error "Missing firmware/include/config_secrets.h - copy config_secrets.example.h to config_secrets.h and fill it in."
+#endif
 
-// 2. Where bridge/server.py is running: the LAN IP of that PC (run `ipconfig`
-//    on Windows) and the port. No trailing slash.
-#define BRIDGE_URL "http://192.168.86.190:8080"
-
-// 3. Which Google News feeds to cycle through. Tap the label in the top-left
+// 2. Which Google News feeds to cycle through. Tap the label in the top-left
 //    corner of the screen to jump to the next one. Each entry is the query
 //    string sent to the bridge:
 //      "topic=TOP|WORLD|NATION|BUSINESS|TECHNOLOGY|ENTERTAINMENT|SPORTS|SCIENCE|HEALTH"
