@@ -50,12 +50,12 @@ Install [PlatformIO](https://platformio.org/install) (VS Code extension, or `pip
 
 ```powershell
 cd firmware
-pio run -e cyd -t upload
+pio run -t upload         # builds the default environment, cyd-st7789
 pio device monitor        # optional serial log
 ```
 
-If the colours look inverted/wrong or the screen is blank, you probably have the **two-USB-port** model:
-use `pio run -e cyd-st7789 -t upload` instead.
+The default environment is `cyd-st7789`, for the **two-USB-port** CYD (ST7789 display). If you have the older
+single-USB-port model, or the screen is blank or the colours are wrong, use `pio run -e cyd -t upload` (ILI9341) instead.
 
 ### Feeds
 
